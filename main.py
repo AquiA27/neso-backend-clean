@@ -3,17 +3,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
-import json
+import sqlite3
 from datetime import datetime
+import json
 
-# .env dosyasından anahtarı yükle
+# Hafıza yönetimi
+from memory import get_memory, add_to_memory
+
+# Ortam değişkenlerini yükle
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI()
 
-# CORS ayarı
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,7 +26,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Menü tanımı (kendi kafesinden)
+# Veritabanı bağlantısı ve tablo oluşturma
+def init_db():
+    conn = sqlite3.connect("neso.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS siparisler (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            masa TEXT,
+            istek TEXT,
+            yanit TEXT,
+            sepet TEXT,
+            zaman TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Menü listesi
 MENU_LISTESI = [
     "Çay", "Fincan Çay", "Sahlep", "Bitki Çayları", "Türk Kahvesi",
     "Osmanlı Kahvesi", "Menengiç Kahvesi", "Süt", "Nescafe",
@@ -31,7 +54,6 @@ MENU_LISTESI = [
     "Latte", "Sıcak Çikolata", "Macchiato"
 ]
 
-# 🔹 Akıllı ve sınırlı Neso Asistanı
 @app.post("/neso")
 async def neso_asistan(req: Request):
     try:
@@ -39,7 +61,6 @@ async def neso_asistan(req: Request):
         user_text = data.get("text")
         masa = data.get("masa", "bilinmiyor")
 
-        # Menü listesi metin olarak AI'ye gönderilecek şekilde
         menu_metni = ", ".join(MENU_LISTESI)
 
         system_prompt = {
@@ -57,18 +78,24 @@ async def neso_asistan(req: Request):
             )
         }
 
-        user_prompt = {"role": "user", "content": user_text}
+        # 🧠 Hafızayı al, sistemi ve kullanıcı mesajını ekle
+        history = get_memory(masa)
+        full_messages = history + [system_prompt, {"role": "user", "content": user_text}]
 
         chat_completion = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[system_prompt, user_prompt],
+            messages=full_messages,
             temperature=0.7
         )
 
         raw = chat_completion.choices[0].message.content
         print("🔍 OpenAI Yanıtı:", raw)
 
-        # Eğer JSON formatındaysa -> sipariştir
+        # 🧠 Hafızayı güncelle
+        add_to_memory(masa, "user", user_text)
+        add_to_memory(masa, "assistant", raw)
+
+        # JSON siparişse → veritabanına kaydet
         if raw.strip().startswith("{"):
             try:
                 parsed = json.loads(raw)
@@ -78,40 +105,51 @@ async def neso_asistan(req: Request):
                     "sepet": []
                 }
 
-            siparis = {
-                "masa": masa,
-                "istek": user_text,
-                "yanit": parsed.get("reply", ""),
-                "sepet": parsed.get("sepet", []),
-                "zaman": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-
-            with open("siparisler.json", "a", encoding="utf-8") as f:
-                f.write(json.dumps(siparis, ensure_ascii=False) + "\n")
+            conn = sqlite3.connect("neso.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                masa,
+                user_text,
+                parsed.get("reply", ""),
+                json.dumps(parsed.get("sepet", []), ensure_ascii=False),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ))
+            conn.commit()
+            conn.close()
 
             return {"reply": parsed.get("reply", "")}
         else:
-            # Normal sohbet yanıtı
             return {"reply": raw}
 
     except Exception as e:
         print("💥 HATA:", e)
         return {"reply": f"Hata oluştu: {str(e)}"}
 
-
-# 🔁 Eski endpoint alias
 @app.post("/sesli-siparis")
-async def eski_neso_asistani(req: Request):
+async def eski_neso(req: Request):
     return await neso_asistan(req)
 
-
-# 🔹 Sipariş geçmişi göster
 @app.get("/siparisler")
-def get_all_orders():
+def siparis_listele():
     try:
-        with open("siparisler.json", "r", encoding="utf-8") as f:
-            lines = f.readlines()
-            orders = [json.loads(line) for line in lines]
-            return {"orders": orders}
-    except FileNotFoundError:
-        return {"orders": []}
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT masa, istek, yanit, sepet, zaman FROM siparisler ORDER BY zaman DESC")
+        rows = cursor.fetchall()
+        conn.close()
+
+        orders = [
+            {
+                "masa": row[0],
+                "istek": row[1],
+                "yanit": row[2],
+                "sepet": json.loads(row[3]),
+                "zaman": row[4]
+            } for row in rows
+        ]
+        return {"orders": orders}
+    except Exception as e:
+        return {"orders": [], "error": str(e)}
