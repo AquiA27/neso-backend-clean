@@ -1,21 +1,19 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from openai import OpenAI
-from dotenv import load_dotenv
 import os
-import json
-from datetime import datetime
 
-# .env dosyasındaki anahtarı yükle
+# Ortam değişkeni yükleme
+from dotenv import load_dotenv
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# OpenAI istemcisi
-client = OpenAI(api_key=OPENAI_API_KEY)
+openai_api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=openai_api_key)
 
 app = FastAPI()
 
-# CORS ayarı: frontend ile backend konuşabilsin
+# CORS ayarları (gerekirse frontend adresinle sınırlandır)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,65 +22,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔹 Neso AI Asistan Endpoint'i
-@app.post("/neso")
-async def neso_asistan(req: Request):
+# İstek modeli
+class Siparis(BaseModel):
+    mesaj: str
+
+@app.post("/sesli-siparis")
+async def sesli_siparis(siparis: Siparis):
+    kullanici_mesaji = siparis.mesaj
+
+    # NESO'nun kişiliği burada tanımlanıyor:
+    system_message = {
+        "role": "system",
+        "content": """
+        Sen Neso adında bir yapay zeka restorant asistanısın. Kibar, espirili, insana güven veren bir tarzda konuşursun.
+        Her siparişe emoji ile tatlı bir yorum yapar, müşteriye değerli olduğunu hissettirirsin.
+        Siparişleri tekrar ederek onaylarsın, bazen kısaca "Afiyet olsun!" veya "Nefis bir seçim!" gibi yorumlar yaparsın.
+        Sipariş dışı sorulara sadece restoran hakkında bilgi verirsin.
+        """
+    }
+
+    user_message = {"role": "user", "content": kullanici_mesaji}
+
     try:
-        data = await req.json()
-        user_text = data.get("text")
-        masa = data.get("masa", "bilinmiyor")
-
-        chat_completion = client.chat.completions.create(
+        completion = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Sen Neso adında bir restoran sipariş asistanısın. "
-                        "Kullanıcının Türkçe siparişini al ve sadece aşağıdaki JSON yapısında cevap ver:\n\n"
-                        "{\n"
-                        '  "reply": "Müşteriye kısa yanıt",\n'
-                        '  "sepet": [\n'
-                        '    { "urun": "ürün adı", "adet": sayı }\n'
-                        "  ]\n"
-                        "}\n\n"
-                        "Sadece bu yapıyı üret. Açıklama ekleme."
-                    )
-                },
-                {"role": "user", "content": user_text}
-            ]
+            messages=[system_message, user_message],
+            temperature=0.8
         )
-
-        raw = chat_completion.choices[0].message.content
-
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            parsed = {"reply": "Siparişiniz alındı ama ürünleri anlayamadım.", "sepet": []}
-
-        siparis = {
-            "masa": masa,
-            "istek": user_text,
-            "yanit": parsed.get("reply", ""),
-            "sepet": parsed.get("sepet", []),
-            "zaman": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-
-        with open("siparisler.json", "a", encoding="utf-8") as f:
-            f.write(json.dumps(siparis, ensure_ascii=False) + "\n")
-
-        return {"reply": parsed.get("reply", "")}
+        cevap = completion.choices[0].message.content.strip()
+        return {"yanit": cevap}
 
     except Exception as e:
-        return {"reply": f"Hata oluştu: {str(e)}"}
-
-# 🔹 Sipariş listesini döndür
-@app.get("/siparisler")
-def get_all_orders():
-    try:
-        with open("siparisler.json", "r", encoding="utf-8") as f:
-            lines = f.readlines()
-            orders = [json.loads(line) for line in lines]
-            return {"orders": orders}
-    except FileNotFoundError:
-        return {"orders": []}
+        return {"yanit": f"Bir hata oluştu: {str(e)}"}
