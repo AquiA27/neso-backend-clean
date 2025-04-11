@@ -1,19 +1,19 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from openai import OpenAI
-import os
-
-# Ortam değişkeni yükleme
 from dotenv import load_dotenv
-load_dotenv()
+import os
+import json
+from datetime import datetime
 
-openai_api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=openai_api_key)
+# .env dosyasından API anahtarını yükle
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI()
 
-# CORS ayarları (gerekirse frontend adresinle sınırlandır)
+# Frontend ile backend iletişimi için CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,35 +22,77 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# İstek modeli
-class Siparis(BaseModel):
-    mesaj: str
-
-@app.post("/sesli-siparis")
-async def sesli_siparis(siparis: Siparis):
-    kullanici_mesaji = siparis.mesaj
-
-    # NESO'nun kişiliği burada tanımlanıyor:
-    system_message = {
-        "role": "system",
-        "content": """
-        Sen Neso adında bir yapay zeka restorant asistanısın. Kibar, espirili, insana güven veren bir tarzda konuşursun.
-        Her siparişe emoji ile tatlı bir yorum yapar, müşteriye değerli olduğunu hissettirirsin.
-        Siparişleri tekrar ederek onaylarsın, bazen kısaca "Afiyet olsun!" veya "Nefis bir seçim!" gibi yorumlar yaparsın.
-        Sipariş dışı sorulara sadece restoran hakkında bilgi verirsin.
-        """
-    }
-
-    user_message = {"role": "user", "content": kullanici_mesaji}
-
+# 🔹 Neso Asistan Endpoint'i
+@app.post("/neso")
+async def neso_asistan(req: Request):
     try:
-        completion = client.chat.completions.create(
+        data = await req.json()
+        user_text = data.get("text")
+        masa = data.get("masa", "bilinmiyor")
+
+        # Neso'nun karakter tanımı ve JSON zorlaması
+        system_prompt = {
+            "role": "system",
+            "content": (
+                "Sen Neso adında bir restoran sipariş asistanısın. "
+                "Kullanıcının Türkçe siparişini al ve sadece aşağıdaki JSON yapısında yanıt ver:\n\n"
+                "{\n"
+                '  "reply": "Tatlı ve espirili bir onay mesajı, emoji içerebilir",\n'
+                '  "sepet": [\n'
+                '    { "urun": "ürün adı", "adet": sayı }\n'
+                "  ]\n"
+                "}\n\n"
+                "Sadece geçerli JSON üret. Açıklama yapma. Kod dışında hiçbir şey yazma. Yanıta metin veya yorum ekleme."
+            )
+        }
+
+        user_prompt = {"role": "user", "content": user_text}
+
+        chat_completion = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[system_message, user_message],
+            messages=[system_prompt, user_prompt],
             temperature=0.8
         )
-        cevap = completion.choices[0].message.content.strip()
-        return {"yanit": cevap}
+
+        raw = chat_completion.choices[0].message.content
+        print("🔍 OpenAI Yanıtı:", raw)
+
+        try:
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            json_text = raw[start:end]
+            parsed = json.loads(json_text)
+        except json.JSONDecodeError as e:
+            print("❌ JSON Parse Hatası:", e)
+            parsed = {
+                "reply": "Siparişiniz alındı ama ürünleri anlayamadım.",
+                "sepet": []
+            }
+
+        siparis = {
+            "masa": masa,
+            "istek": user_text,
+            "yanit": parsed.get("reply", ""),
+            "sepet": parsed.get("sepet", []),
+            "zaman": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        with open("siparisler.json", "a", encoding="utf-8") as f:
+            f.write(json.dumps(siparis, ensure_ascii=False) + "\n")
+
+        return {"reply": parsed.get("reply", "")}
 
     except Exception as e:
-        return {"yanit": f"Bir hata oluştu: {str(e)}"}
+        print("💥 Genel Hata:", e)
+        return {"reply": f"Hata oluştu: {str(e)}"}
+
+# 🔹 Sipariş geçmişi endpoint'i
+@app.get("/siparisler")
+def get_all_orders():
+    try:
+        with open("siparisler.json", "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            orders = [json.loads(line) for line in lines]
+            return {"orders": orders}
+    except FileNotFoundError:
+        return {"orders": []}
