@@ -22,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔹 Neso Asistan Endpoint'i
+# 🔹 Ana Neso Asistan Endpoint'i
 @app.post("/neso")
 async def neso_asistan(req: Request):
     try:
@@ -85,6 +85,13 @@ async def neso_asistan(req: Request):
     except Exception as e:
         print("💥 Genel Hata:", e)
         return {"reply": f"Hata oluştu: {str(e)}"}
+
+
+# 🔁 Eski endpoint için alias (önceki frontend ile uyumluluk)
+@app.post("/sesli-siparis")
+async def eski_neso_asistani(req: Request):
+    return await neso_asistan(req)
+
 
 # 🔹 Sipariş geçmişi endpoint'i
 @app.get("/siparisler")
