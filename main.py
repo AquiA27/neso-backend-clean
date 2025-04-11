@@ -6,14 +6,14 @@ import os
 import json
 from datetime import datetime
 
-# .env dosyasından API anahtarını yükle
+# .env dosyasından anahtarı yükle
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI()
 
-# Frontend ile backend iletişimi için CORS
+# CORS ayarı
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,7 +22,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔹 Ana Neso Asistan Endpoint'i
+# Menü tanımı (kendi kafesinden)
+MENU_LISTESI = [
+    "Çay", "Fincan Çay", "Sahlep", "Bitki Çayları", "Türk Kahvesi",
+    "Osmanlı Kahvesi", "Menengiç Kahvesi", "Süt", "Nescafe",
+    "Nescafe Sütlü", "Esspresso", "Filtre Kahve", "Cappuccino",
+    "Mocha", "White Mocha", "Classic Mocha", "Caramel Mocha",
+    "Latte", "Sıcak Çikolata", "Macchiato"
+]
+
+# 🔹 Akıllı ve sınırlı Neso Asistanı
 @app.post("/neso")
 async def neso_asistan(req: Request):
     try:
@@ -30,74 +39,73 @@ async def neso_asistan(req: Request):
         user_text = data.get("text")
         masa = data.get("masa", "bilinmiyor")
 
-        # Neso'nun karakter tanımı ve JSON zorlaması
-system_prompt = {
-    "role": "system",
-    "content": (
-        "Sen Neso adında bir restoran yapay zeka asistanısın. Aşağıdaki menüye göre sipariş alıyorsun:\n\n"
-        "Menü:\n"
-        "- Çay\n- Fincan Çay\n- Sahlep\n- Bitki Çayları (Ihlamur, Nane-Limon, Papatya, Adaçayı, vb.)\n"
-        "- Türk Kahvesi\n- Osmanlı Kahvesi\n- Menengiç Kahvesi\n"
-        "- Süt\n- Nescafe\n- Nescafe Sütlü\n"
-        "- Esspresso\n- Filtre Kahve\n- Cappuccino\n"
-        "- Mocha (White, Classic, Caramel)\n"
-        "- Latte\n- Sıcak Çikolata\n- Macchiato\n\n"
-        "Müşteri mesajı bir sipariş içeriyorsa, aşağıdaki JSON yapısında cevap ver:\n"
-        '{\n  "reply": "Tatlı ve espirili onay mesajı",\n  "sepet": [ { "urun": "ürün adı", "adet": sayı } ]\n}\n\n'
-        "Eğer mesaj sadece sohbet veya öneri içeriyorsa, doğal ve samimi bir cevap ver. JSON kullanma.\n"
-        "Eğer müşteri menüde olmayan bir ürün isterse, kibarca üzgün olduğunu belirten bir mesaj ver. Sakın uydurma ürün ekleme. JSON sadece geçerli siparişler için kullanılmalı."
-    )
-}
+        # Menü listesi metin olarak AI'ye gönderilecek şekilde
+        menu_metni = ", ".join(MENU_LISTESI)
 
+        system_prompt = {
+            "role": "system",
+            "content": (
+                f"Sen Neso adında kibar, sevimli ve espirili bir restoran yapay zeka asistanısın. "
+                f"Aşağıdaki ürünler kafenin menüsüdür. Sadece bu ürünler sipariş edilebilir:\n\n"
+                f"{menu_metni}\n\n"
+                "Kullanıcının mesajı eğer sipariş içeriyorsa, sadece şu JSON yapısında yanıt ver:\n"
+                '{\n  "reply": "Tatlı ve espirili kısa onay mesajı",\n  "sepet": [ { "urun": "ürün adı", "adet": sayı } ]\n}\n\n'
+                "Eğer müşteri sohbet ediyorsa (örneğin 'ne içmeliyim?', 'bugün ne önerirsin?'), "
+                "sadece öneri ver, samimi ol, emoji kullan. JSON kullanma.\n\n"
+                "Eğer müşteri menüde olmayan bir ürün isterse (örneğin 'menemen' veya 'pizza'), "
+                "kibarca menüde olmadığını belirt. Sakın uydurma ürün ekleme veya tahminde bulunma."
+            )
+        }
 
         user_prompt = {"role": "user", "content": user_text}
 
         chat_completion = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[system_prompt, user_prompt],
-            temperature=0.8
+            temperature=0.7
         )
 
         raw = chat_completion.choices[0].message.content
         print("🔍 OpenAI Yanıtı:", raw)
 
-        try:
-            start = raw.find("{")
-            end = raw.rfind("}") + 1
-            json_text = raw[start:end]
-            parsed = json.loads(json_text)
-        except json.JSONDecodeError as e:
-            print("❌ JSON Parse Hatası:", e)
-            parsed = {
-                "reply": "Siparişiniz alındı ama ürünleri anlayamadım.",
-                "sepet": []
+        # Eğer JSON formatındaysa -> sipariştir
+        if raw.strip().startswith("{"):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {
+                    "reply": "Siparişinizi tam anlayamadım efendim. Menüdeki ürünlerden tekrar deneyebilir misiniz? 🥲",
+                    "sepet": []
+                }
+
+            siparis = {
+                "masa": masa,
+                "istek": user_text,
+                "yanit": parsed.get("reply", ""),
+                "sepet": parsed.get("sepet", []),
+                "zaman": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
 
-        siparis = {
-            "masa": masa,
-            "istek": user_text,
-            "yanit": parsed.get("reply", ""),
-            "sepet": parsed.get("sepet", []),
-            "zaman": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
+            with open("siparisler.json", "a", encoding="utf-8") as f:
+                f.write(json.dumps(siparis, ensure_ascii=False) + "\n")
 
-        with open("siparisler.json", "a", encoding="utf-8") as f:
-            f.write(json.dumps(siparis, ensure_ascii=False) + "\n")
-
-        return {"reply": parsed.get("reply", "")}
+            return {"reply": parsed.get("reply", "")}
+        else:
+            # Normal sohbet yanıtı
+            return {"reply": raw}
 
     except Exception as e:
-        print("💥 Genel Hata:", e)
+        print("💥 HATA:", e)
         return {"reply": f"Hata oluştu: {str(e)}"}
 
 
-# 🔁 Eski endpoint için alias (önceki frontend ile uyumluluk)
+# 🔁 Eski endpoint alias
 @app.post("/sesli-siparis")
 async def eski_neso_asistani(req: Request):
     return await neso_asistan(req)
 
 
-# 🔹 Sipariş geçmişi endpoint'i
+# 🔹 Sipariş geçmişi göster
 @app.get("/siparisler")
 def get_all_orders():
     try:
