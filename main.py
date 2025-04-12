@@ -6,6 +6,7 @@ import os
 import sqlite3
 from datetime import datetime
 import json
+import re
 
 # Hafıza yönetimi
 from memory import get_memory, add_to_memory
@@ -54,6 +55,16 @@ MENU_LISTESI = [
     "Latte", "Sıcak Çikolata", "Macchiato"
 ]
 
+# Emojileri temizleyen yardımcı fonksiyon
+def remove_emojis(text):
+    emoji_pattern = re.compile("["
+        u"\U0001F600-\U0001F64F"  # Emoticons
+        u"\U0001F300-\U0001F5FF"  # Symbols & pictographs
+        u"\U0001F680-\U0001F6FF"  # Transport & map symbols
+        u"\U0001F1E0-\U0001F1FF"  # Flags (iOS)
+        "]+", flags=re.UNICODE)
+    return emoji_pattern.sub(r'', text).strip()
+
 @app.post("/neso")
 async def neso_asistan(req: Request):
     try:
@@ -66,18 +77,18 @@ async def neso_asistan(req: Request):
         system_prompt = {
             "role": "system",
             "content": (
-    f"Sen Neso adında kibar, sevimli ve espirili bir restoran yapay zeka asistanısın. "
-    f"Aşağıdaki ürünler kafenin menüsüdür. Sadece bu ürünler sipariş edilebilir:\n\n"
-    f"{menu_metni}\n\n"
-    "Kullanıcının mesajı eğer sipariş içeriyorsa, sadece şu JSON yapısında yanıt ver:\n"
-    '{\n  "reply": "Siparişi kibar ve gerçekçi bir şekilde onaylayan kısa bir mesaj yaz. '
-    'Örneğin: \'Latte siparişiniz alındı, 10 dakika içinde hazır olacak ☕️\' gibi. Emoji eklemeyi unutma.",\n'
-    '  "sepet": [ { "urun": "ürün adı", "adet": sayı } ]\n}\n\n'
-    "Eğer müşteri sohbet ediyorsa (örneğin 'ne içmeliyim?', 'bugün ne önerirsin?'), "
-    "sadece öneri ver, samimi ol, emoji kullan. JSON kullanma.\n\n"
-    "Eğer müşteri menüde olmayan bir ürün isterse (örneğin 'menemen' veya 'pizza'), "
-    "kibarca menüde olmadığını belirt. Sakın uydurma ürün ekleme veya tahminde bulunma."
-)
+                f"Sen Neso adında kibar, sevimli ve espirili bir restoran yapay zeka asistanısın. "
+                f"Aşağıdaki ürünler kafenin menüsüdür. Sadece bu ürünler sipariş edilebilir:\n\n"
+                f"{menu_metni}\n\n"
+                "Kullanıcının mesajı sipariş içeriyorsa, kibar ve doğal konuşma diliyle yanıt ver. Yanıt kısa, gerçekçi ve profesyonel olsun. Dilersen samimi bir emoji ile süsle ama abartma. Format şu olmalı:\n"
+                '{\n  "reply": "Siparişi kibar ve gerçekçi bir şekilde onaylayan kısa bir mesaj yaz. '
+                'Örneğin: \'Latte siparişiniz alındı, 10 dakika içinde hazır olacak ☕️\' gibi. Emoji eklemeyi unutma.",\n'
+                '  "sepet": [ { "urun": "ürün adı", "adet": sayı } ]\n}\n\n'
+                "Eğer müşteri sohbet ediyorsa (örneğin 'ne içmeliyim?', 'bugün ne önerirsin?'), "
+                "sadece öneri ver, samimi ol, emoji kullan. JSON kullanma.\n\n"
+                "Eğer müşteri menüde olmayan bir ürün isterse (örneğin 'menemen' veya 'pizza'), "
+                "kibarca menüde olmadığını belirt. Sakın uydurma ürün ekleme veya tahminde bulunma."
+            )
         }
 
         # 🧠 Hafızayı al, sistemi ve kullanıcı mesajını ekle
@@ -115,16 +126,24 @@ async def neso_asistan(req: Request):
             """, (
                 masa,
                 user_text,
-                parsed.get("reply", ""),
+                remove_emojis(parsed.get("reply", "")),
                 json.dumps(parsed.get("sepet", []), ensure_ascii=False),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ))
             conn.commit()
             conn.close()
 
-            return {"reply": parsed.get("reply", "")}
+            return {
+    "reply": parsed.get("reply", ""),         # Yazılı mesaj (emoji içerir)
+    "voice_reply": remove_emojis(parsed.get("reply", ""))  # Sesli sistem için sade metin
+}
+
         else:
-            return {"reply": raw}
+            return {
+    "reply": raw,
+    "voice_reply": remove_emojis(raw)
+}
+
 
     except Exception as e:
         print("💥 HATA:", e)
@@ -155,3 +174,4 @@ def siparis_listele():
         return {"orders": orders}
     except Exception as e:
         return {"orders": [], "error": str(e)}
+
