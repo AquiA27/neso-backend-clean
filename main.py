@@ -96,7 +96,7 @@ async def neso_asistan(req: Request):
         full_messages = history + [system_prompt, {"role": "user", "content": user_text}]
 
         chat_completion = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4-turbo",
             messages=full_messages,
             temperature=0.7
         )
